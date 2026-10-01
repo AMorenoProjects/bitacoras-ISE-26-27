@@ -1,0 +1,52 @@
+name: Gestor Automático de PRs de Alumnos
+
+on:
+  # Usamos pull_request_target en lugar de pull_request para que la Acción
+  # tenga permisos de escritura (necesarios para comentar, cerrar o hacer merge)
+  # incluso cuando el PR viene de un fork externo.
+  pull_request_target:
+    types: [opened, synchronize]
+
+jobs:
+  procesar-pr:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: write
+
+    steps:
+      - name: Evaluar conflictos y procesar
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          echo "Revisando estado de conflictos del PR #$PR_NUMBER..."
+          
+          # GitHub calcula de forma asíncrona si hay conflictos.
+          # Al crear el PR, el estado puede ser 'null'. Hacemos un bucle para esperar la confirmación.
+          MERGEABLE="null"
+          INTENTOS=0
+          
+          while [ "$MERGEABLE" == "null" ] && [ $INTENTOS -lt 12 ]; do
+            sleep 5
+            MERGEABLE=$(gh api repos/$REPO/pulls/$PR_NUMBER --jq '.mergeable')
+            INTENTOS=$((INTENTOS+1))
+          done
+
+          echo "Estado final 'mergeable': $MERGEABLE"
+
+          if [ "$MERGEABLE" == "true" ]; then
+            echo "Sin conflictos. Fusionando PR..."
+            # Hace un merge commit estándar. Puedes cambiar --merge por --squash o --rebase si lo prefieres.
+            gh pr merge $PR_NUMBER --merge --admin
+            
+          elif [ "$MERGEABLE" == "false" ]; then
+            echo "Conflictos detectados. Cerrando PR..."
+            gh pr comment $PR_NUMBER --body "Se ha rechazado tu pull request. Debes asegurarte de sincronizar tu fork del repositorio del profesor justo antes de hacer el pull request."
+            gh pr close $PR_NUMBER
+            
+          else
+            echo "No se pudo determinar el estado de los conflictos."
+            exit 1
+          fi
